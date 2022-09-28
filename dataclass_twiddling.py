@@ -1,13 +1,21 @@
+import json
+import dacite
+
+from dataclasses import dataclass, field, is_dataclass
 from enum import Enum
-from logging import exception, basicConfig
 from pprint import pprint
 from typing import List, Optional
 
-from dataclass_property import dataclass, field_property, field
-import jsons
 
-
-basicConfig()
+def asdict(obj):
+    retval = dict()
+    for k in obj.__dataclass_fields__:
+        v = obj.__dict__.get(k)
+        if v is not None:
+            if is_dataclass(v):
+                v = asdict(v)
+            retval[k] = v
+    return retval
 
 
 # fully good
@@ -19,6 +27,12 @@ good = '''{
 # there is no try (missing optional value)
 stillgood = '''{
 "herp": {"derp": "yarp", "narp": false},
+"yes": {"whyNot": [{"Do": "DoNot"}]}
+}'''
+
+# missing derp optional value
+yetgood = '''{
+"herp": {"narp": false},
 "yes": {"whyNot": [{"Do": "DoNot"}]}
 }'''
 
@@ -35,7 +49,6 @@ invalid = '''{
 }'''
 
 
-
 @dataclass
 class Root:
     herp: 'herp'
@@ -44,16 +57,11 @@ class Root:
 @dataclass
 class herp:
     narp: bool
+    derp: Optional[str] = field()
 
-    @field_property(default=None)
-    def derp(self) -> Optional[str]:
-        return self._derp
-    @derp.setter
-    def derp(self, value):
-        if value not in ['yarp', 'narp']:
-            raise ValueError(value)
-        self._derp = value
-
+    def __post_init__(self):
+        if self.derp is not None and self.derp not in ['yarp', 'narp']:
+            raise ValueError(self.derp)
 
 @dataclass
 class yes:
@@ -63,20 +71,40 @@ class yes:
 @dataclass
 class yoda:
     Do: 'doIt'
-    Try: Optional[bool] = None
+    Try: Optional[bool] = field()
 
 
 class doIt(Enum):
-    Do = 1
-    DoNot = 2
+    Do = 'Do'
+    DoNot = 'DoNot'
 
 
-for name, testcase in [('good', good), ('stillgood', stillgood), ('missing', missing), ('invalid', invalid)]:
+class BetterEncoder(json.JSONEncoder):
+    def default(self, o):
+        # we got here because o wasn't serializable
+
+        # if enum return the enum value instead
+        if isinstance(o, Enum):
+            return o.value
+
+        # if dataclass return dataclass.asdict(), stripping nulls
+        if is_dataclass(o):
+            return {k: v for k, v in asdict(o).items() if v is not None}
+
+        # give up and make the base class complain about it not being serializable
+        return super().default(o)
+
+
+for name, testcase in [('good', good), ('stillgood', stillgood), ('yetgood', yetgood), ('missing', missing), ('invalid', invalid)]:
     print(f'\n\n{name}\n')
     try:
-        root = jsons.loads(testcase, Root, strict=True)
+        root = dacite.from_dict(
+            data=json.loads(testcase),
+            data_class=Root,
+            config=dacite.Config(
+                type_hooks={doIt: doIt}))
         pprint(root)
-        outjson = jsons.dumps(root, strip_privates=True)
+        outjson = json.dumps(root, cls=BetterEncoder)
         pprint(outjson)
-    except:
-        exception('blowedup')
+    except Exception as exc:
+        print(exc)
